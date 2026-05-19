@@ -124,7 +124,7 @@ section:nth-child(even){background:var(--bg2)}
 .bleg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 
 /* Canvas BBL map */
-#bbl-map-canvas{width:100%;border:1px solid var(--border);background:var(--bg3);display:block;border-radius:2px}
+#bbl-map-vega{width:100%;min-height:480px;border:1px solid var(--border);background:var(--bg3);border-radius:2px}
 
 /* FOOTER */
 footer{background:var(--bg);padding:48px 60px;border-top:1px solid var(--border)}
@@ -341,7 +341,7 @@ footer p{font-size:12.5px;color:var(--textm);line-height:1.7}
         <div class="bbl-counter" id="bbl-counter">547 total wins</div>
       </div>
       <div class="bbl-legend" id="bbl-legend"></div>
-      <canvas id="bbl-map-canvas" height="480"></canvas>
+      <div id="bbl-map-vega" style="width:100%;min-height:480px"></div>
     </div>
   </div>
   <div class="gf fade-in">
@@ -667,186 +667,117 @@ E('#c-rise',{height:400,data:{values:D_RISING},layer:[
 ]});
 
 // ══════════════════════════════════════════════
-// 16. BBL DOT MAP — Canvas animation
+// 16. BBL DOT MAP — Vega-Lite with real TopoJSON + animated slider
 // ══════════════════════════════════════════════
-const canvas=document.getElementById('bbl-map-canvas');
-const bctx=canvas.getContext('2d');
+const TOPOURL='https://raw.githubusercontent.com/Zedtox/australia-cricket-dynasty/main/aus_states.topojson';
+const TOPO_FEATURE='STE_2021_AUST_GDA2020';
 const SEASONS=['2011-12','2012-13','2013-14','2014-15','2015-16','2016-17','2017-18','2018-19','2019-20','2020-21','2021-22','2022-23','2023-24','All'];
 const BBL_ANN=['Sydney Sixers win the inaugural BBL title at the SCG.',
   'Perth Scorchers emerge as the competition\'s first powerhouse.',
-  'Perth Scorchers go back-to-back — the Scorchers dynasty begins.',
+  'Perth Scorchers go back-to-back \u2014 the Scorchers dynasty begins.',
   'Perth Scorchers win a third title in four seasons.',
-  'Shock result — Sydney Thunder claim their first ever BBL title.',
+  'Shock result \u2014 Sydney Thunder claim their first ever BBL title.',
   'Perth Scorchers cement their status as the BBL\'s most successful side.',
   'Adelaide Strikers break through for their first title.',
   'Melbourne Renegades win their only title, ending the season bottom the previous year.',
-  'Sydney Sixers obliterate the competition — 11 wins from 14 games.',
+  'Sydney Sixers obliterate the competition \u2014 11 wins from 14 games.',
   'Sydney Sixers back-to-back. Green and Pink dominate the decade.',
-  'Perth Scorchers reclaim the throne. Five titles total — tied with the Sixers.',
+  'Perth Scorchers reclaim the throne. Five titles total \u2014 tied with the Sixers.',
   'Brisbane Heat claim their breakthrough title in the 2022-23 season.',
   'Sydney Sixers claim a fifth title, matching the Scorchers\' all-time record.',
   'Perth Scorchers and Sydney Sixers lead all-time with 5 titles each across 13 seasons.'];
 
-let bblCurrentSeason=13,bblPlaying=false,bblTimer=null,bblAnimFrame=null;
-let bblVisibleDots=new Set(),bblAllDots=D_BBL_DOTS;
-let bblAnimQueue=[],bblAnimIdx=0;
+let bblCurrentSeason=13, bblPlaying=false, bblTimer=null;
+let bblAllDots=D_BBL_DOTS;
 
-// AUS state border paths (simplified GeoJSON-style as canvas paths)
-// Approximate pixel positions for a 700x480 Mercator-ish projection of Australia
-// centre ~133E, -27N, scale ~9px per degree
-// Proper Australian projection
-function geoToCanvas(lon,lat,W,H){
-  // Australia bounding box with padding
-  const LON_MIN=112.5,LON_MAX=154,LAT_MIN=-44.5,LAT_MAX=-10;
-  const PAD_L=28,PAD_R=28,PAD_T=28,PAD_B=28;
-  const usableW=W-PAD_L-PAD_R;
-  const usableH=H-PAD_T-PAD_B;
-  const scaleX=usableW/(LON_MAX-LON_MIN);
-  const scaleY=usableH/(LAT_MAX-LAT_MIN);
-  const scale=Math.min(scaleX,scaleY);
-  const mapW=(LON_MAX-LON_MIN)*scale;
-  const mapH=(LAT_MAX-LAT_MIN)*scale;
-  const offX=PAD_L+(usableW-mapW)/2;
-  const offY=PAD_T+(usableH-mapH)/2;
-  const x=offX+(lon-LON_MIN)*scale;
-  // Latitude: -10 is north (top), -44.5 is south (bottom)
-  const y=offY+(LAT_MAX-lat)*scale;
-  return[Math.round(x),Math.round(y)];
+function getBBLDots(seasonIdx){
+  if(seasonIdx===13) return bblAllDots;
+  return bblAllDots.filter(d=>d.season_idx<=seasonIdx);
 }
 
-function drawStateOutlines(W,H){
-  // Verified Australian state boundaries (lon/lat)
-  // Australia: lon 113-154, lat -10 to -44
-  const states=[
-    {name:'WA', lbl:[121,-26], fill:'rgba(26,92,53,0.3)', pts:[
-      [114,-13.7],[114,-35.5],[123,-33.8],[124,-33.5],[129,-31.7],
-      [129,-35.1],[129,-38],[114,-38],[114,-13.7]
-    ]},
-    {name:'NT', lbl:[133,-20], fill:'rgba(45,120,70,0.25)', pts:[
-      [129,-14.5],[138,-14.5],[138,-26],[136,-26],[136,-29.5],[129,-29.5],[129,-14.5]
-    ]},
-    {name:'SA', lbl:[135,-31], fill:'rgba(180,140,20,0.2)', pts:[
-      [129,-29.5],[136,-29.5],[136,-26],[138,-26],[140.9,-26],[140.9,-34.5],
-      [141,-34.5],[141,-38],[129,-38],[129,-29.5]
-    ]},
-    {name:'QLD', lbl:[145,-22], fill:'rgba(26,92,53,0.22)', pts:[
-      [138,-10.7],[153.5,-25],[153.5,-29],[141,-29],[140.9,-26],[138,-26],[138,-10.7]
-    ]},
-    {name:'NSW', lbl:[147.5,-33], fill:'rgba(45,100,82,0.2)', pts:[
-      [141,-29],[153.5,-29],[153.5,-37.5],[150.7,-37.5],[141,-34.5],[141,-29]
-    ]},
-    {name:'VIC', lbl:[144,-37.2], fill:'rgba(240,180,41,0.14)', pts:[
-      [141,-34.5],[150.7,-37.5],[149.4,-39],[141,-39],[141,-34.5]
-    ]},
-    {name:'TAS', lbl:[146.5,-42.2], fill:'rgba(26,92,53,0.28)', pts:[
-      [144.5,-40.5],[148.5,-40.5],[148.5,-43.7],[144.5,-43.7],[144.5,-40.5]
-    ]},
-  ];
-  // Fill states
-  states.forEach(s=>{
-    bctx.beginPath();
-    s.pts.forEach(([lo,la],i)=>{
-      const[x,y]=geoToCanvas(lo,la,W,H);
-      i===0?bctx.moveTo(x,y):bctx.lineTo(x,y);
-    });
-    bctx.closePath();
-    bctx.fillStyle=s.fill; bctx.fill();
-    bctx.strokeStyle='rgba(240,180,41,0.45)';
-    bctx.lineWidth=1.4; bctx.setLineDash([5,4]);
-    bctx.stroke(); bctx.setLineDash([]);
-  });
-  // Labels
-  bctx.font='bold 12px DM Mono'; bctx.textAlign='center';
-  bctx.fillStyle='rgba(240,180,41,0.7)';
-  states.forEach(s=>{
-    const[lx,ly]=geoToCanvas(s.lbl[0],s.lbl[1],W,H);
-    bctx.fillText(s.name,lx,ly);
-  });
+function renderBBLMap(dots){
+  const spec={
+    $schema:'https://vega.github.io/schema/vega-lite/v5.json',
+    width:'container', height:480,
+    config:{background:'#060d08',view:{stroke:'transparent'},
+      legend:{labelFont:'DM Sans',labelColor:'rgba(232,224,206,0.6)',titleFont:'DM Sans',titleColor:'rgba(232,224,206,0.5)'}},
+    projection:{type:'mercator',center:[133,-28],scale:900},
+    layer:[
+      // Real state shapes from TopoJSON
+      {
+        data:{url:TOPOURL, format:{type:'topojson',feature:TOPO_FEATURE}},
+        mark:{type:'geoshape', fill:'rgba(26,92,53,0.25)', stroke:'rgba(240,180,41,0.5)', strokeWidth:1.5, strokeDash:[5,3]}
+      },
+      // State name labels
+      {
+        data:{values:[
+          {name:'WA',  lon:121.5, lat:-26},
+          {name:'NT',  lon:133,   lat:-19.5},
+          {name:'SA',  lon:135.5, lat:-30},
+          {name:'QLD', lon:145,   lat:-22},
+          {name:'NSW', lon:147,   lat:-32.5},
+          {name:'VIC', lon:144.5, lat:-36.8},
+          {name:'TAS', lon:146.5, lat:-42.2},
+          {name:'ACT', lon:149.1, lat:-35.5},
+        ]},
+        mark:{type:'text', fontSize:12, fontWeight:'bold', font:'DM Mono', color:'rgba(240,180,41,0.65)', align:'center'},
+        encoding:{
+          longitude:{field:'lon', type:'quantitative'},
+          latitude:{field:'lat', type:'quantitative'},
+          text:{field:'name'}
+        }
+      },
+      // Win dots
+      {
+        data:{values:dots},
+        mark:{type:'circle', size:38, opacity:0.82, stroke:'rgba(6,13,8,0.5)', strokeWidth:0.8},
+        encoding:{
+          longitude:{field:'lon', type:'quantitative'},
+          latitude:{field:'lat', type:'quantitative'},
+          color:{field:'team', type:'nominal',
+            scale:{domain:['Sydney Sixers','Perth Scorchers','Melbourne Stars','Brisbane Heat','Adelaide Strikers','Melbourne Renegades','Hobart Hurricanes','Sydney Thunder'],
+              range:['#ff69b4','#f47920','#00a650','#e4002b','#005aab','#c0392b','#6f2082','#f0b429']},
+            legend:null},
+          tooltip:[{field:'team',title:'Team'},{field:'season',title:'Season'},{field:'state',title:'State'}]
+        }
+      }
+    ]
+  };
+  vegaEmbed('#bbl-map-vega', spec, {actions:false});
+  document.getElementById('bbl-counter').textContent=dots.length+' wins shown';
 }
 
-function drawBBLMap(){
-  const W=canvas.width,H=canvas.height;
-  bctx.clearRect(0,0,W,H);
-  // Background
-  bctx.fillStyle='#060d08';bctx.fillRect(0,0,W,H);
-  // Ocean tint
-  bctx.fillStyle='rgba(10,30,20,0.6)';bctx.fillRect(0,0,W,H);
-  drawStateOutlines(W,H);
+// Initial render
+renderBBLMap(getBBLDots(13));
 
-  // Draw visible dots
-  const dots=bblCurrentSeason===13?bblAllDots:bblAllDots.filter(d=>d.season_idx<=bblCurrentSeason);
-  const visible=bblCurrentSeason===13?bblAllDots:dots;
-
-  visible.forEach(d=>{
-    const[x,y]=geoToCanvas(d.lon,d.lat,W,H);
-    const isNew=bblVisibleDots.has(d.id);
-    const r=isNew?5:5;
-    bctx.beginPath();bctx.arc(x,y,r,0,Math.PI*2);
-    bctx.fillStyle=d.color;bctx.globalAlpha=0.82;bctx.fill();
-    bctx.strokeStyle='rgba(6,13,8,0.5)';bctx.lineWidth=0.8;bctx.stroke();
-    bctx.globalAlpha=1;
-  });
-
-  // Counter
-  document.getElementById('bbl-counter').textContent=visible.length+' wins shown';
-}
-
-function resizeBBLCanvas(){
-  const w=canvas.parentElement.clientWidth-48;
-  canvas.width=Math.max(400,w);canvas.height=480;
-  drawBBLMap();
-}
-
-async function bblRevealSeason(seasonIdx){
-  const newDots=bblAllDots.filter(d=>d.season_idx===seasonIdx&&!bblVisibleDots.has(d.id));
-  for(const d of newDots){
-    bblVisibleDots.add(d.id);
-    const[x,y]=geoToCanvas(d.lon,d.lat,canvas.width,canvas.height);
-    // burst animation
-    for(let r=12;r>=5;r-=1.5){
-      bctx.beginPath();bctx.arc(x,y,r,0,Math.PI*2);
-      bctx.fillStyle=d.color;bctx.globalAlpha=0.3*(r/12);bctx.fill();bctx.globalAlpha=1;
-      await new Promise(res=>setTimeout(res,12));
-      drawBBLMap();
-    }
-  }
-}
-
-let bblPlayIdx=0;
 async function bblAutoPlay(){
   bblPlaying=true;
   document.getElementById('bbl-play-btn').innerHTML='&#9646;&#9646;';
-  for(let i=0;i<=12&&bblPlaying;i++){
+  for(let i=0;i<=13&&bblPlaying;i++){
     bblCurrentSeason=i;
     document.getElementById('bbl-slider').value=i;
-    document.getElementById('bbl-season-label').textContent=SEASONS[i];
+    document.getElementById('bbl-season-label').textContent=i===13?'All seasons (2011\u20132024)':SEASONS[i];
     document.getElementById('bbl-annotation').textContent=BBL_ANN[i];
-    bblVisibleDots=new Set(bblAllDots.filter(d=>d.season_idx<i).map(d=>d.id));
-    await bblRevealSeason(i);
+    renderBBLMap(getBBLDots(i));
+    await new Promise(res=>setTimeout(res,i===13?0:900));
     if(!bblPlaying)break;
-    await new Promise(res=>setTimeout(res,800));
-  }
-  if(bblPlaying){
-    bblCurrentSeason=13;
-    document.getElementById('bbl-slider').value=13;
-    document.getElementById('bbl-season-label').textContent='All seasons (2011–2024)';
-    document.getElementById('bbl-annotation').textContent=BBL_ANN[13];
-    drawBBLMap();
   }
   bblPlaying=false;
   document.getElementById('bbl-play-btn').innerHTML='&#9654;';
 }
+
 function bblTogglePlay(){
   if(bblPlaying){bblPlaying=false;document.getElementById('bbl-play-btn').innerHTML='&#9654;';}
   else bblAutoPlay();
 }
+
 function bblSliderChange(val){
-  bblPlaying=false;document.getElementById('bbl-play-btn').innerHTML='&#9654;';
+  bblPlaying=false;
+  document.getElementById('bbl-play-btn').innerHTML='&#9654;';
   bblCurrentSeason=parseInt(val);
-  document.getElementById('bbl-season-label').textContent=bblCurrentSeason===13?'All seasons (2011–2024)':SEASONS[bblCurrentSeason];
+  document.getElementById('bbl-season-label').textContent=bblCurrentSeason===13?'All seasons (2011\u20132024)':SEASONS[bblCurrentSeason];
   document.getElementById('bbl-annotation').textContent=BBL_ANN[bblCurrentSeason];
-  bblVisibleDots=new Set(bblAllDots.filter(d=>d.season_idx<=bblCurrentSeason).map(d=>d.id));
-  drawBBLMap();
+  renderBBLMap(getBBLDots(bblCurrentSeason));
 }
 
 // BBL legend
